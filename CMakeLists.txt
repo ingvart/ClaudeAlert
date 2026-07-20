@@ -67,6 +67,11 @@ endif()
 add_executable(cusage src/cli/main.cpp)
 target_link_libraries(cusage PRIVATE cusage_core)
 
+# Claude Code hook forwarder: reads a hook payload on stdin, POSTs session
+# metadata to the relay. Cross-platform (Windows + Linux); see PLAN.md §6.A.
+add_executable(cusage_hook_notify src/hook/main.cpp)
+target_link_libraries(cusage_hook_notify PRIVATE cusage_core)
+
 # ---- Desktop tray GUI: SDL3 + Dear ImGui (optional) ----
 option(CUSAGE_BUILD_GUI "Build the SDL3 + Dear ImGui tray app" ON)
 if(CUSAGE_BUILD_GUI)

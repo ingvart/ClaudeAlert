@@ -1,16 +1,33 @@
 #!/usr/bin/env python3
 """Self-hosted relay for Claude Usage Monitor.
 
-Stores the latest usage snapshot POSTed by the desktop and serves it to the
-phone. Runs entirely on your own machine (e.g. a Raspberry Pi) — no third party.
-Only usage percentages and reset times pass through it; never an OAuth token.
+Two independent jobs, both LAN-only and token-guarded:
+
+1. Usage mailbox (original): stores the latest usage snapshot POSTed by the
+   desktop and serves it to the phone.
+
+2. Session inventory (see PLAN.md): receives Claude Code hook events forwarded by
+   `cusage_hook_notify` from each dev machine, tracks which sessions are working
+   vs idle, and exposes a "landing" whenever a session finishes a turn that ran
+   longer than a threshold (so the widget can notify "your session is done").
+
+Runs entirely on your own machine (e.g. a Raspberry Pi) — no third party. Only
+usage percentages, reset times, session ids, working-directory paths and session
+titles pass through it; never an OAuth token and never transcript content.
 
 Usage:
     RELAY_TOKEN=your-shared-secret python3 relay.py [port]
 
-Endpoints (both require `Authorization: Bearer <RELAY_TOKEN>` when a token is set):
-    POST /usage   body = usage JSON   (desktop publishes here)
-    GET  /usage   -> latest usage JSON, or 204 if none yet (phone reads here)
+Environment:
+    RELAY_TOKEN                 shared bearer secret (auth off if unset)
+    SESSION_NOTIFY_MIN_SECONDS  min turn duration to count as a landing (default 60)
+    SESSION_STALE_HOURS         drop sessions/landings older than this (default 12)
+
+Endpoints (all require `Authorization: Bearer <RELAY_TOKEN>` when a token is set):
+    POST /usage          body = usage JSON        (desktop publishes here)
+    GET  /usage       -> latest usage JSON, or 204 if none yet (phone reads here)
+    POST /session/event  body = hook event JSON   (cusage_hook_notify posts here)
+    GET  /sessions    -> { sessions:[...], landings:[...], now:<epoch> }
 """
 
 import http.server
@@ -18,13 +35,21 @@ import json
 import os
 import sys
 import threading
+import time
 
 TOKEN = os.environ.get("RELAY_TOKEN", "")
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "relay_state.json")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE = os.path.join(_HERE, "relay_state.json")
+SESSION_STATE_FILE = os.path.join(_HERE, "session_state.json")
+
+NOTIFY_MIN_SECONDS = int(os.environ.get("SESSION_NOTIFY_MIN_SECONDS", "60"))
+STALE_SECONDS = float(os.environ.get("SESSION_STALE_HOURS", "12")) * 3600.0
 
 _lock = threading.Lock()
 
+
+# ---- usage mailbox -------------------------------------------------------
 
 def _load_latest() -> str:
     try:
@@ -35,6 +60,109 @@ def _load_latest() -> str:
 
 
 _latest = _load_latest()
+
+
+# ---- session inventory ---------------------------------------------------
+
+def _load_sessions():
+    try:
+        with open(SESSION_STATE_FILE, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return data.get("sessions", {}), data.get("landings", [])
+    except (OSError, ValueError):
+        return {}, []
+
+
+_sessions, _landings = _load_sessions()
+_turns = {}  # prompt_id -> turn-start ts; transient, rebuilt as events arrive
+
+
+def _persist_sessions() -> None:
+    try:
+        with open(SESSION_STATE_FILE, "w", encoding="utf-8") as handle:
+            json.dump({"sessions": _sessions, "landings": _landings}, handle)
+    except OSError:
+        pass  # In-memory copy still serves the widget.
+
+
+def _sweep(now: float) -> None:
+    """Drop sessions and landings with no activity within the stale window.
+
+    Self-healing (PLAN.md §2.5): SessionEnd is not guaranteed to arrive (crash,
+    laptop sleep), so we never rely on it to remove a session."""
+    stale = [sid for sid, s in _sessions.items()
+             if now - s.get("last_seen", 0) > STALE_SECONDS]
+    for sid in stale:
+        _sessions.pop(sid, None)
+    _landings[:] = [l for l in _landings
+                    if now - l.get("landed_at", 0) <= STALE_SECONDS]
+
+
+def _handle_event(evt: dict) -> None:
+    sid = evt.get("session_id")
+    if not sid:
+        return
+    ts = evt.get("ts")
+    if not isinstance(ts, (int, float)):
+        ts = time.time()
+    event = evt.get("event", "")
+
+    s = _sessions.setdefault(sid, {"state": "unknown", "cwd": "", "title": ""})
+    if evt.get("cwd"):
+        s["cwd"] = evt["cwd"]
+    if evt.get("session_title"):
+        s["title"] = evt["session_title"]
+    s["last_seen"] = ts
+
+    pid = evt.get("prompt_id")
+
+    if event in ("UserPromptSubmit", "SessionStart"):
+        s["state"] = "working"
+        s["turn_started_at"] = ts
+        if pid:
+            _turns[pid] = ts
+    elif event == "Stop":
+        s["state"] = "idle"
+        started = _turns.pop(pid, None) if pid else None
+        if started is None:
+            started = s.get("turn_started_at")
+        duration = (ts - started) if started is not None else 0
+        s["last_landed_at"] = ts
+        s["last_duration"] = duration
+        background = int(evt.get("background_tasks", 0) or 0)
+        # Only a substantial turn with no lingering background work is a landing.
+        if duration >= NOTIFY_MIN_SECONDS and background == 0:
+            _landings.append({
+                "session_id": sid,
+                "title": s.get("title", ""),
+                "cwd": s.get("cwd", ""),
+                "landed_at": ts,
+                "duration": duration,
+            })
+            del _landings[:-50]  # Keep only the most recent 50.
+    elif event == "SessionEnd":
+        s["state"] = "ended"
+        s["ended_at"] = ts
+
+    _sweep(time.time())
+    _persist_sessions()
+
+
+def _sessions_snapshot() -> dict:
+    now = time.time()
+    _sweep(now)
+    sessions = []
+    for sid, s in _sessions.items():
+        sessions.append({
+            "session_id": sid,
+            "cwd": s.get("cwd", ""),
+            "title": s.get("title", ""),
+            "state": s.get("state", "unknown"),
+            "last_seen": s.get("last_seen", 0),
+            "last_landed_at": s.get("last_landed_at"),
+            "last_duration": s.get("last_duration"),
+        })
+    return {"sessions": sessions, "landings": list(_landings), "now": now}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -51,37 +179,60 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
+    def _read_body(self) -> str:
+        length = int(self.headers.get("Content-Length", "0"))
+        return self.rfile.read(length).decode("utf-8") if length else ""
+
     def do_GET(self) -> None:
-        if self.path.split("?")[0] != "/usage":
-            return self._send(404)
+        path = self.path.split("?")[0]
         if not self._authorized():
             return self._send(401)
-        with _lock:
-            data = _latest
-        if not data:
-            return self._send(204)
-        self._send(200, data.encode("utf-8"))
+        if path == "/usage":
+            with _lock:
+                data = _latest
+            if not data:
+                return self._send(204)
+            return self._send(200, data.encode("utf-8"))
+        if path == "/sessions":
+            with _lock:
+                snapshot = _sessions_snapshot()
+            return self._send(200, json.dumps(snapshot).encode("utf-8"))
+        return self._send(404)
 
     def do_POST(self) -> None:
-        if self.path.split("?")[0] != "/usage":
-            return self._send(404)
+        path = self.path.split("?")[0]
         if not self._authorized():
             return self._send(401)
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length).decode("utf-8") if length else ""
-        try:
-            json.loads(body)  # Reject anything that isn't valid JSON.
-        except ValueError:
-            return self._send(400)
-        global _latest
-        with _lock:
-            _latest = body
+
+        if path == "/usage":
+            body = self._read_body()
             try:
-                with open(STATE_FILE, "w", encoding="utf-8") as handle:
-                    handle.write(body)
-            except OSError:
-                pass  # In-memory copy still serves the phone.
-        self._send(200)
+                json.loads(body)  # Reject anything that isn't valid JSON.
+            except ValueError:
+                return self._send(400)
+            global _latest
+            with _lock:
+                _latest = body
+                try:
+                    with open(STATE_FILE, "w", encoding="utf-8") as handle:
+                        handle.write(body)
+                except OSError:
+                    pass  # In-memory copy still serves the phone.
+            return self._send(200)
+
+        if path == "/session/event":
+            body = self._read_body()
+            try:
+                evt = json.loads(body)
+            except ValueError:
+                return self._send(400)
+            if not isinstance(evt, dict):
+                return self._send(400)
+            with _lock:
+                _handle_event(evt)
+            return self._send(200)
+
+        return self._send(404)
 
     def log_message(self, *args) -> None:
         pass  # Quiet.
@@ -89,5 +240,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"Claude usage relay listening on :{PORT} (auth: {'on' if TOKEN else 'off'})")
+    print(f"Claude usage relay listening on :{PORT} "
+          f"(auth: {'on' if TOKEN else 'off'}, "
+          f"landing threshold: {NOTIFY_MIN_SECONDS}s)")
     server.serve_forever()

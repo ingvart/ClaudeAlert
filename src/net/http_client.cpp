@@ -37,15 +37,19 @@ SlistPtr build_headers(std::span<const std::string> headers) {
 }
 
 std::expected<HttpResponse, Error> perform(
-    CURL* curl, std::span<const std::string> headers) {
+    CURL* curl, std::span<const std::string> headers, long timeout_ms) {
   std::string body;
   const SlistPtr header_list = build_headers(headers);
+
+  const long total_ms = timeout_ms > 0 ? timeout_ms : 15000L;
+  // Never wait longer to connect than the whole request is allowed to take.
+  const long connect_ms = total_ms < 8000L ? total_ms : 8000L;
 
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list.get());
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &write_to_string);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 15000L);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 8000L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, total_ms);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, connect_ms);
   curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "claude-usage-monitor/0.1");
@@ -69,7 +73,8 @@ CurlPtr make_handle() { return CurlPtr(curl_easy_init(), &curl_easy_cleanup); }
 }  // namespace
 
 std::expected<HttpResponse, Error> http_get(
-    std::string_view url, std::span<const std::string> headers) {
+    std::string_view url, std::span<const std::string> headers,
+    long timeout_ms) {
   ensure_global();
   CurlPtr curl = make_handle();
   if (!curl) {
@@ -78,12 +83,12 @@ std::expected<HttpResponse, Error> http_get(
   const std::string url_str(url);
   curl_easy_setopt(curl.get(), CURLOPT_URL, url_str.c_str());
   curl_easy_setopt(curl.get(), CURLOPT_HTTPGET, 1L);
-  return perform(curl.get(), headers);
+  return perform(curl.get(), headers, timeout_ms);
 }
 
 std::expected<HttpResponse, Error> http_post_json(
     std::string_view url, std::string_view json_body,
-    std::span<const std::string> headers) {
+    std::span<const std::string> headers, long timeout_ms) {
   ensure_global();
   CurlPtr curl = make_handle();
   if (!curl) {
@@ -96,7 +101,7 @@ std::expected<HttpResponse, Error> http_post_json(
   curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, body.c_str());
   curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE,
                    static_cast<long>(body.size()));
-  return perform(curl.get(), headers);
+  return perform(curl.get(), headers, timeout_ms);
 }
 
 }  // namespace cusage
