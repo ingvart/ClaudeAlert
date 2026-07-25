@@ -43,6 +43,7 @@ import androidx.core.content.ContextCompat
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
@@ -297,6 +298,13 @@ fun SettingsScreen(onPickSound: () -> Unit, onOpenUrl: (String) -> Unit) {
             weeklyThreshold = weekly.toIntOrNull() ?: config.weeklyThreshold,
             fiveHourDropFloor = fiveHourFloor.toIntOrNull() ?: config.fiveHourDropFloor))
         Prefs.setRelay(context, relayUrl, relayToken)
+        // Poll once right away so the seen-landings set is seeded now (rather than
+        // on the first periodic run up to 15 min later); the next NEW landing then
+        // notifies reliably.
+        if (relayUrl.isNotBlank()) {
+          WorkManager.getInstance(context)
+              .enqueue(OneTimeWorkRequestBuilder<PollWorker>().build())
+        }
         statusOk = true
         status = "Settings saved."
       }) {
