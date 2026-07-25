@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.io.File
 
@@ -28,6 +29,11 @@ object Prefs {
   private const val K_POLL = "poll_minutes"
   private const val K_SNAPSHOT = "last_snapshot"
   private const val K_SOUND = "sound_uri"
+  private const val K_RELAY_URL = "relay_url"
+  private const val K_RELAY_TOKEN = "relay_token"
+  private const val K_SEEN_LANDINGS = "seen_landings"
+  private const val K_LANDINGS_SEEDED = "landings_seeded"
+  private const val MAX_SEEN_LANDINGS = 200
   private val json = Json { ignoreUnknownKeys = true }
 
   private fun prefs(context: Context) =
@@ -96,6 +102,50 @@ object Prefs {
         .putInt(K_WEEKLY, config.weeklyThreshold)
         .putInt(K_FIVE_FLOOR, config.fiveHourDropFloor)
         .apply()
+  }
+
+  // --- Relay (session monitoring) ------------------------------------------
+  // Optional and independent of the Claude login. Empty relay URL => the whole
+  // session feature is off (mirrors the desktop's feature-flag gating).
+
+  fun relayUrl(context: Context): String =
+      prefs(context).getString(K_RELAY_URL, "").orEmpty()
+
+  fun relayToken(context: Context): String =
+      prefs(context).getString(K_RELAY_TOKEN, "").orEmpty()
+
+  fun setRelay(context: Context, url: String, token: String) {
+    val editor = prefs(context).edit()
+        .putString(K_RELAY_URL, url.trim())
+        .putString(K_RELAY_TOKEN, token.trim())
+    // If the relay target changed, forget which landings we've seen and re-seed
+    // on the next poll, so a switch never dumps a backlog of old notifications.
+    if (relayBase(url) != relayBase(relayUrl(context))) {
+      editor.remove(K_SEEN_LANDINGS).putBoolean(K_LANDINGS_SEEDED, false)
+    }
+    editor.apply()
+  }
+
+  fun landingsSeeded(context: Context): Boolean =
+      prefs(context).getBoolean(K_LANDINGS_SEEDED, false)
+
+  fun setLandingsSeeded(context: Context, seeded: Boolean) =
+      prefs(context).edit().putBoolean(K_LANDINGS_SEEDED, seeded).apply()
+
+  fun seenLandings(context: Context): MutableSet<String> {
+    val raw = prefs(context).getString(K_SEEN_LANDINGS, null) ?: return linkedSetOf()
+    return runCatching {
+      json.decodeFromString(ListSerializer(String.serializer()), raw)
+          .toCollection(LinkedHashSet())
+    }.getOrDefault(linkedSetOf())
+  }
+
+  fun setSeenLandings(context: Context, seen: Set<String>) {
+    // Keep only the most recent keys; the relay caps landings at ~50 anyway.
+    val trimmed = if (seen.size > MAX_SEEN_LANDINGS)
+      seen.toList().takeLast(MAX_SEEN_LANDINGS) else seen.toList()
+    val raw = json.encodeToString(ListSerializer(String.serializer()), trimmed)
+    prefs(context).edit().putString(K_SEEN_LANDINGS, raw).apply()
   }
 
   fun soundUri(context: Context): Uri? =

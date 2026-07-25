@@ -61,4 +61,50 @@ object Notifications {
         .build()
     runCatching { NotificationManagerCompat.from(context).notify(id, notification) }
   }
+
+  // --- Session landings -----------------------------------------------------
+  // A separate channel from usage alerts so the user can give "session done" its
+  // own sound/importance (or silence it) independently. Uses the same chosen
+  // alert sound as usage alerts by default; the sound-hash suffix means picking a
+  // new sound yields a fresh channel that actually uses it (see channelId note).
+  private const val LANDING_CHANNEL_BASE = "session_landings"
+
+  private fun landingChannelId(context: Context): String {
+    val sound = Prefs.soundUri(context)?.toString() ?: "default"
+    return LANDING_CHANNEL_BASE + "_" + Integer.toHexString(sound.hashCode())
+  }
+
+  fun ensureLandingChannel(context: Context) {
+    val manager = context.getSystemService(NotificationManager::class.java)
+    val id = landingChannelId(context)
+    if (manager.getNotificationChannel(id) == null) {
+      val channel = NotificationChannel(id, "Session landed", NotificationManager.IMPORTANCE_HIGH)
+      channel.description = "A Claude Code session finished working and is waiting for you"
+      channel.enableVibration(true)
+      Prefs.soundUri(context)?.let { uri ->
+        val attributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        channel.setSound(uri, attributes)
+      }
+      manager.createNotificationChannel(channel)
+    }
+    manager.notificationChannels
+        .filter { it.id.startsWith(LANDING_CHANNEL_BASE) && it.id != id }
+        .forEach { manager.deleteNotificationChannel(it.id) }
+  }
+
+  fun postLanding(context: Context, id: Int, label: String, durationSeconds: Long) {
+    ensureLandingChannel(context)
+    val text = "Finished after ${formatDuration(durationSeconds)} — waiting for you"
+    val notification = NotificationCompat.Builder(context, landingChannelId(context))
+        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .setContentTitle("✅ $label")
+        .setContentText(text)
+        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setAutoCancel(true)
+        .build()
+    runCatching { NotificationManagerCompat.from(context).notify(id, notification) }
+  }
 }

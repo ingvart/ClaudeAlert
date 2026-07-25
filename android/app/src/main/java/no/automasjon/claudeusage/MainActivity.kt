@@ -20,7 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -28,6 +28,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +46,7 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
@@ -106,7 +108,71 @@ fun SettingsScreen(onPickSound: () -> Unit, onOpenUrl: (String) -> Unit) {
   var notifyOnDrop by remember { mutableStateOf(config.notifyOnDrop) }
   var status by remember { mutableStateOf<String?>(null) }
   var statusOk by remember { mutableStateOf(false) }
+
+  // Usage panel state, seeded from the last saved snapshot then refreshed live.
+  var windows by remember { mutableStateOf(Prefs.lastSnapshot(context)) }
+  var extra by remember { mutableStateOf<ExtraUsageDto?>(null) }
+  var updatedNote by remember {
+    mutableStateOf(if (windows.isEmpty()) "" else "Showing last saved data…")
+  }
+  var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
   val scope = rememberCoroutineScope()
+
+  // Relay (remote session monitoring) — optional, independent of the login.
+  var relayUrl by remember { mutableStateOf(Prefs.relayUrl(context)) }
+  var relayToken by remember { mutableStateOf(Prefs.relayToken(context)) }
+  var sessions by remember { mutableStateOf<SessionInventory?>(null) }
+  var sessionNote by remember { mutableStateOf("") }
+
+  // Keep the reset countdowns ticking while the screen is open.
+  LaunchedEffect(Unit) {
+    while (true) {
+      nowMs = System.currentTimeMillis()
+      delay(10_000)
+    }
+  }
+
+  // Live session list while the screen is open, using the SAVED relay config
+  // (not the in-progress text fields). Silent when no relay is configured.
+  LaunchedEffect(Unit) {
+    while (true) {
+      val url = Prefs.relayUrl(context)
+      if (url.isNotBlank()) {
+        val result = withContext(Dispatchers.IO) {
+          runCatching { SessionApi.fetch(url, Prefs.relayToken(context)) }
+        }
+        result.fold(
+            onSuccess = { sessions = it; sessionNote = "" },
+            onFailure = { sessionNote = "Can't reach relay — check URL/token." })
+      }
+      delay(15_000)
+    }
+  }
+
+  // Fetch fresh usage; update panel, stored snapshot, and widget. Returns success.
+  val refresh: suspend () -> Boolean = refresh@{
+    val result = withContext(Dispatchers.IO) {
+      runCatching {
+        val token = TokenManager.validAccessToken(context)
+        val dto = UsageApi.fetch(token)
+        val fresh = dto.toWindows()
+        Prefs.setLastSnapshot(context, fresh)
+        UsageWidget.updateAll(context)
+        fresh to dto.extra_usage
+      }
+    }
+    result.fold(
+        onSuccess = { (fresh, eu) ->
+          windows = fresh
+          extra = eu
+          updatedNote = "Updated just now · auto-refreshes every 15 min"
+          true
+        },
+        onFailure = { false })
+  }
+
+  // Refresh once when the screen opens / after a fresh login.
+  LaunchedEffect(loggedIn) { if (loggedIn) refresh() }
 
   MaterialTheme {
     Column(
@@ -114,12 +180,37 @@ fun SettingsScreen(onPickSound: () -> Unit, onOpenUrl: (String) -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
       Text("Claude Usage Monitor", style = MaterialTheme.typography.titleLarge)
 
+      // ---- Informative usage panel (top) ----
+      UsagePanel(windows, extra, updatedNote, nowMs)
       if (loggedIn) {
-        Text("Signed in ✓  The app fetches your usage directly and renews its " +
-            "own session automatically — you won't need to log in again.")
+        TextButton(onClick = {
+          status = "Refreshing…"
+          scope.launch {
+            val ok = refresh()
+            statusOk = ok
+            status = if (ok) "Updated ✓" else "Refresh failed — check connection."
+          }
+        }) { Text("Check now") }
+      }
+
+      // ---- Remote sessions (only once a relay is configured) ----
+      if (relayUrl.isNotBlank()) {
+        HorizontalDivider()
+        SessionsPanel(sessions, sessionNote)
+      }
+
+      HorizontalDivider()
+
+      // ---- Settings (below) ----
+      if (loggedIn) {
+        Text("Signed in ✓  Fetches usage directly and renews its own session " +
+            "automatically — no repeat logins.")
         OutlinedButton(onClick = {
           Prefs.logout(context)
           loggedIn = false
+          windows = emptyList()
+          extra = null
+          updatedNote = ""
           status = null
         }) { Text("Log out") }
       } else {
@@ -142,25 +233,19 @@ fun SettingsScreen(onPickSound: () -> Unit, onOpenUrl: (String) -> Unit) {
             onClick = {
               status = "Signing in…"
               scope.launch {
-                val result = withContext(Dispatchers.IO) {
+                val exchanged = withContext(Dispatchers.IO) {
                   runCatching {
                     val tokens = OAuth.exchange(
                         code.trim(), Prefs.pendingVerifier(context), Prefs.pendingState(context))
                     Prefs.saveTokens(context, tokens)
-                    val windows = UsageApi.fetch(tokens.accessToken).toWindows()
-                    Prefs.setLastSnapshot(context, windows)
-                    UsageWidget.updateAll(context)
-                    windows
                   }
                 }
-                result.fold(
-                    onSuccess = { windows ->
-                      loggedIn = true
-                      statusOk = true
+                exchanged.fold(
+                    onSuccess = {
                       code = ""
-                      val five = windows.firstOrNull { it.name == "5-hour" }?.percent
-                      val wk = windows.firstOrNull { it.name == "weekly" }?.percent
-                      status = "Signed in ✓   5h ${five ?: "-"}%   ·   weekly ${wk ?: "-"}%"
+                      loggedIn = true  // triggers the refresh effect → panel fills in
+                      statusOk = true
+                      status = "Signed in ✓"
                     },
                     onFailure = { error ->
                       statusOk = false
@@ -169,8 +254,6 @@ fun SettingsScreen(onPickSound: () -> Unit, onOpenUrl: (String) -> Unit) {
               }
             }) { Text("2. Complete login") }
       }
-
-      Divider()
 
       OutlinedTextField(
           value = weekly,
@@ -186,6 +269,23 @@ fun SettingsScreen(onPickSound: () -> Unit, onOpenUrl: (String) -> Unit) {
             "Notify when usage drops or resets (capacity freed)",
             modifier = Modifier.padding(start = 8.dp))
       }
+      HorizontalDivider()
+      Text("Remote session monitoring (optional)",
+          style = MaterialTheme.typography.titleMedium)
+      Text("Point this at your self-hosted relay to get notified when a Claude " +
+          "Code session on your computer finishes working. Leave blank to disable.",
+          style = MaterialTheme.typography.bodySmall)
+      OutlinedTextField(
+          value = relayUrl,
+          onValueChange = { relayUrl = it },
+          label = { Text("Relay URL (e.g. http://192.168.0.10:8787)") },
+          modifier = Modifier.fillMaxWidth())
+      OutlinedTextField(
+          value = relayToken,
+          onValueChange = { relayToken = it },
+          label = { Text("Relay token") },
+          modifier = Modifier.fillMaxWidth())
+
       OutlinedButton(onClick = onPickSound) { Text("Pick alert sound") }
       OutlinedButton(onClick = {
         Notifications.post(context, 9999, "Claude usage (test)",
@@ -196,39 +296,11 @@ fun SettingsScreen(onPickSound: () -> Unit, onOpenUrl: (String) -> Unit) {
             notifyOnDrop = notifyOnDrop,
             weeklyThreshold = weekly.toIntOrNull() ?: config.weeklyThreshold,
             fiveHourDropFloor = fiveHourFloor.toIntOrNull() ?: config.fiveHourDropFloor))
+        Prefs.setRelay(context, relayUrl, relayToken)
         statusOk = true
         status = "Settings saved."
       }) {
         Text("Save settings")
-      }
-
-      // Manual refresh for when you just want to check right now.
-      if (loggedIn) {
-        TextButton(onClick = {
-          status = "Refreshing…"
-          scope.launch {
-            val result = withContext(Dispatchers.IO) {
-              runCatching {
-                val token = TokenManager.validAccessToken(context)
-                val windows = UsageApi.fetch(token).toWindows()
-                Prefs.setLastSnapshot(context, windows)
-                UsageWidget.updateAll(context)
-                windows
-              }
-            }
-            result.fold(
-                onSuccess = { windows ->
-                  statusOk = true
-                  val five = windows.firstOrNull { it.name == "5-hour" }?.percent
-                  val wk = windows.firstOrNull { it.name == "weekly" }?.percent
-                  status = "5h ${five ?: "-"}%   ·   weekly ${wk ?: "-"}%"
-                },
-                onFailure = { error ->
-                  statusOk = false
-                  status = "Refresh failed: ${error.message ?: "unknown"}"
-                })
-          }
-        }) { Text("Check now") }
       }
 
       status?.let { message ->

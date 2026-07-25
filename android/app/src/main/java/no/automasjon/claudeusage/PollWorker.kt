@@ -14,6 +14,12 @@ class PollWorker(appContext: Context, params: WorkerParameters) :
 
   override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
     val context = applicationContext
+
+    // Session landings are independent of the Claude login (they only need the
+    // relay), so poll them first and regardless. A relay blip is swallowed —
+    // the next run catches up; it must never force a retry of the usage poll.
+    runCatching { pollSessions(context) }
+
     if (!Prefs.isLoggedIn(context)) return@withContext Result.success()  // Not set up yet.
 
     val current = try {
@@ -41,5 +47,32 @@ class PollWorker(appContext: Context, params: WorkerParameters) :
     Prefs.setLastSnapshot(context, current)
     UsageWidget.updateAll(context)
     Result.success()
+  }
+
+  // Fetch the relay's session inventory and notify on any landing not seen
+  // before. Seeds silently on the first poll (or after a relay change) so
+  // pre-existing landings never fire. Mirrors the desktop's select_new_landings.
+  private fun pollSessions(context: Context) {
+    val relayUrl = Prefs.relayUrl(context)
+    if (relayUrl.isBlank()) return  // Feature off.
+
+    val inventory = SessionApi.fetch(relayUrl, Prefs.relayToken(context))
+    val seen = Prefs.seenLandings(context)
+
+    if (!Prefs.landingsSeeded(context)) {
+      inventory.landings.forEach { seen.add(landingKey(it)) }
+      Prefs.setSeenLandings(context, seen)
+      Prefs.setLandingsSeeded(context, true)
+      return
+    }
+
+    val fresh = selectNewLandings(inventory.landings, seen)
+    var notificationId = 2000
+    for (landing in fresh) {
+      Notifications.postLanding(
+          context, notificationId++,
+          sessionLabel(landing.title, landing.cwd), landing.duration)
+    }
+    Prefs.setSeenLandings(context, seen)
   }
 }
