@@ -407,10 +407,24 @@ Files: relay (`SessionStart`/`SessionEnd` handling + aging + persistence), setti
 - **Check:** sessions appear on spawn, disappear on end, and stale ones age out; a
   crash (no `SessionEnd`) doesn't leave a permanent "working" ghost.
 
-### Phase 4 — Android widget
-Files: Android worker, notification channel, session-list screen, Kotlin models.
-- **Check:** finishing a long session raises a phone notification (foreground within
-  seconds; background within the WorkManager interval).
+### Phase 4 — Android widget — ✅ BUILT 2026-07-26
+Files: `SessionDomain.kt` (models + `selectNewLandings`, ported from `session.cpp`),
+`SessionApi.kt` (`GET <relay>/sessions`), `PollWorker.kt` (session poll, login-
+independent, seeds-then-notifies), `Notifications.kt` (dedicated "Session landed"
+channel), `Prefs.kt` (relay URL/token + seen-landings, reseed on relay change),
+`SessionsPanel.kt` + `MainActivity.kt` (live list + relay settings, hidden until a
+relay is set). Also carried the in-progress usage panel (`UsagePanel/UsageFormat`).
+- **Built & compiles:** `./gradlew :app:assembleDebug` succeeds; debug APK produced
+  and delivered. `usesCleartextTraffic` was already on, so the LAN `http://` relay
+  works.
+- **Still to confirm on-device:** install the APK, set Relay URL + token, and see a
+  real long session raise a phone notification (background within the ~15 min
+  WorkManager cadence; the in-app list refreshes every 15 s). First poll after
+  configuring **seeds silently** — the first landing that notifies is the next one
+  after setup.
+- **Note:** WorkManager's ~15 min floor bounds background latency (accepted for v1;
+  FCM in Phase 5 if it matters). In-app foreground updates the list but does not
+  post notifications (redundant while looking at it).
 
 ### Phase 5 (deferred / optional) — nice-to-haves
 - Per-session enable/disable checkbox (needs the inventory from Phase 3; the toggle
