@@ -181,8 +181,21 @@ All four entries run the **same** command; the binary branches on
   }
 }
 ```
-Windows uses the same shape with the `.exe` path. Each machine's
-`~/.claude/settings.json` is per-machine; that's expected.
+Each machine's `~/.claude/settings.json` is per-machine; that's expected.
+
+**⚠️ Windows gotcha (cost us a retry).** Claude Code runs hook commands through
+**git-bash (`sh`)** on this Windows setup (the `cmd.exe //c` permission entries are
+the tell). A bare backslash path as the `command` — `"C:\\…\\cusage_hook_notify.exe"`
+— **silently fails**: `sh` eats the backslashes as escapes, and `async:true` hides
+the error. Two working fixes:
+- **Forward slashes** in the path: `"C:/…/cusage_hook_notify.exe"` (Windows accepts
+  them; `sh` leaves them alone), or
+- **A PowerShell wrapper** (what we use), reusing the exact invocation proven in
+  Phase 0: `"powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\Ingvar\\.claude\\cusage_hook.ps1\""`.
+  The wrapper (`~/.claude/cusage_hook.ps1`) reads stdin via `[Console]::In.ReadToEnd()`,
+  pipes it to the `.exe`, and sets `CUSAGE_HOOK_DEBUG=1` for a trace log.
+
+Linux paths (forward slashes) work directly with no wrapper.
 
 ### 4.4 ⚠️ Known risk to clear in Phase 0
 There is a documented bug where the **`Notification` hook does not fire in the
@@ -359,8 +372,16 @@ retired in 2026-06 (phone self-fetches usage); revived it: copied the new
   `GET /sessions`; a trivial turn produced none. The live inventory also shows
   real Claude Code sessions, confirming the hooks fire in the VS Code env on
   Linux too.
-- **Windows (prompt §10.C) still pending** — wire the same hooks at
-  `build/debug/cusage_hook_notify.exe` and drop the Phase-0 probe.
+- **Windows (prompt §10.C) — ✅ DONE 2026-07-26.** Built the forwarder against the
+  updated tree; smoke test → HTTP 200; dropped the Phase-0 probe; wired real `Stop`
+  + `UserPromptSubmit` hooks via a **PowerShell wrapper** (`~/.claude/cusage_hook.ps1`)
+  after a bare backslash path silently failed under git-bash (see §4.3 gotcha).
+  **Check — PASSED:** a real 284 s turn produced exactly one Windows landing on
+  `GET /sessions` (cwd `…\ClaudeUsageMonitor`); an 8 s turn produced none.
+- **Phase 1 is now closed on all three machines (Pi + Linux + Windows).**
+  Note: the Windows wrapper leaves `CUSAGE_HOOK_DEBUG=1` on, so
+  `~/.claude/cusage_hook_notify.log` gains one line per turn — harmless, trim or
+  disable later if desired.
 
 ### Phase 2 — Desktop notification (prove the alert UX where it's easy to iterate) — ✅ BUILT 2026-07-21
 Files: `src/core/session.*` (new model + dedupe), `src/core/session_client.*`
