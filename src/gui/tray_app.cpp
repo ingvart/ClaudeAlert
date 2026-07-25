@@ -11,7 +11,10 @@
 #include <ctime>
 #include <expected>
 #include <optional>
+#include <set>
+#include <stop_token>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -24,6 +27,8 @@
 #include "core/config.h"
 #include "core/credentials.h"
 #include "core/poller.h"
+#include "core/session.h"
+#include "core/session_client.h"
 #include "core/timefmt.h"
 #include "core/usage.h"
 #include "core/usage_client.h"
@@ -93,6 +98,51 @@ void poll_worker(std::stop_token stop, NotifyConfig config, SharedState* state) 
       }
     }
   });
+}
+
+// Second, lighter poll loop (PLAN.md §6.C): fetches the relay's session
+// inventory on its own cadence (default 15s, vs the ~10-minute usage poll) and
+// publishes it into shared state. Only started when a relay is configured.
+//
+// Landing dedupe is client-side by (session_id, landed_at): `seen` remembers
+// every landing key we have observed. The very first poll only *seeds* `seen`
+// so landings that happened before the app started never fire a notification —
+// only landings observed while we are running do.
+void session_poll_worker(std::stop_token stop, NotifyConfig config,
+                         SharedState* state) {
+  const std::string url = config.relay_url;
+  const std::string token = config.relay_token;
+  const int cadence = std::max(config.session_poll_seconds, 5);
+  std::set<std::string> seen;
+  bool first_poll = true;
+
+  while (!stop.stop_requested()) {
+    auto inventory = fetch_sessions(url, token);
+    {
+      std::lock_guard lock(state->mutex);
+      if (inventory) {
+        state->session_error.reset();
+        std::vector<Landing> fresh = select_new_landings(inventory->landings, seen);
+        if (first_poll) {
+          first_poll = false;  // Seed only; do not notify for pre-existing landings.
+        } else {
+          for (auto& landing : fresh) {
+            state->pending_landings.push_back(std::move(landing));
+            spdlog::info("session landed: {}", state->pending_landings.back().session_id);
+          }
+        }
+        state->sessions = std::move(*inventory);
+      } else {
+        state->session_error = inventory.error();
+        spdlog::debug("session poll failed: {}", inventory.error().message);
+      }
+      state->dirty = true;
+    }
+    // Sleep the cadence in one-second slices so shutdown stays responsive.
+    for (int i = 0; i < cadence && !stop.stop_requested(); ++i) {
+      std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+  }
 }
 
 long long now_epoch_seconds() { return static_cast<long long>(std::time(nullptr)); }
@@ -181,6 +231,94 @@ std::string summary_text(const std::optional<UsageSnapshot>& snapshot,
   return "Loading...";
 }
 
+// Best-effort audible cue for a landing (PLAN.md §6.C "play a sound"). Audio is
+// a nicety, never a requirement: if no device opens (headless box, no server),
+// beep() is simply a no-op — the OS notification still fires.
+class Beeper {
+ public:
+  void init() {
+    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+      spdlog::info("audio unavailable; landing beep disabled: {}", SDL_GetError());
+      return;
+    }
+    SDL_AudioSpec spec{};
+    spec.freq = kRate;
+    spec.format = SDL_AUDIO_F32;
+    spec.channels = 1;
+    stream_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec,
+                                        nullptr, nullptr);
+    if (!stream_) {
+      spdlog::info("no audio device; landing beep disabled: {}", SDL_GetError());
+      return;
+    }
+    SDL_ResumeAudioStreamDevice(stream_);
+  }
+
+  // A short two-tone chime. Queued asynchronously, so it plays over the modal
+  // notification box that follows.
+  void beep() {
+    if (!stream_) return;
+    constexpr int kMillis = 220;
+    constexpr int kCount = kRate * kMillis / 1000;
+    constexpr double kPi = 3.14159265358979323846;
+    const int fade = kRate / 100;  // 10 ms fade in/out to avoid clicks.
+    std::vector<float> samples(kCount);
+    for (int i = 0; i < kCount; ++i) {
+      const double freq = (i < kCount / 2) ? 880.0 : 1174.7;  // A5 -> D6.
+      const double t = static_cast<double>(i) / kRate;
+      const double env =
+          std::min({1.0, static_cast<double>(i) / fade,
+                    static_cast<double>(kCount - i) / fade});
+      samples[i] = static_cast<float>(0.2 * env * std::sin(2.0 * kPi * freq * t));
+    }
+    SDL_PutAudioStreamData(stream_, samples.data(),
+                           static_cast<int>(samples.size() * sizeof(float)));
+  }
+
+  void shutdown() {
+    if (stream_) SDL_DestroyAudioStream(stream_);
+    stream_ = nullptr;
+  }
+
+ private:
+  static constexpr int kRate = 44100;
+  SDL_AudioStream* stream_ = nullptr;
+};
+
+// One row per session: a working/idle dot, the title (or short id), the working
+// directory, and "landed N ago" for an idle session that has landed. "N ago"
+// uses the relay clock carried in `now` so it never skews (PLAN.md §6.B/§6.C).
+void draw_sessions(const SessionInventory& inv) {
+  if (inv.sessions.empty()) {
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No active sessions.");
+    return;
+  }
+  for (const auto& s : inv.sessions) {
+    const bool working = s.state == "working";
+    const bool ended = s.state == "ended";
+    const ImVec4 dot = working  ? ImVec4(0.30f, 0.80f, 0.35f, 1.0f)   // green
+                       : ended  ? ImVec4(0.55f, 0.55f, 0.55f, 1.0f)   // grey
+                                : ImVec4(0.95f, 0.75f, 0.25f, 1.0f);  // amber idle
+    ImGui::TextColored(dot, "\xE2\x97\x8F");  // Filled bullet.
+    ImGui::SameLine();
+    const std::string label = !s.title.empty() ? s.title
+                              : !s.session_id.empty()
+                                  ? s.session_id.substr(0, 8)
+                                  : std::string("(session)");
+    ImGui::TextUnformatted(label.c_str());
+
+    if (!s.cwd.empty()) {
+      ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "   %s", s.cwd.c_str());
+    }
+    std::string status = working ? "working..." : s.state;
+    if (!working && s.last_landed_at) {
+      status = "landed " + humanize_duration(inv.now - *s.last_landed_at) + " ago";
+    }
+    ImGui::TextColored(ImVec4(0.75f, 0.75f, 0.80f, 1.0f), "   %s", status.c_str());
+    ImGui::Spacing();
+  }
+}
+
 // Owns the optional Dear ImGui + OpenGL details window. Created on demand and
 // torn down when the user closes it; the tray keeps running either way.
 class DetailsWindow {
@@ -256,6 +394,21 @@ class DetailsWindow {
         }
       } else if (!state.last_error) {
         ImGui::TextUnformatted("Loading...");
+      }
+
+      // Session list — only present when a relay is configured (§2.1: the whole
+      // feature is invisible otherwise). The collapsing header is the "button on
+      // the usage page" from PLAN.md §6.C; it opens the session list in place.
+      if (state.sessions) {
+        ImGui::Separator();
+        ImGui::Spacing();
+        if (ImGui::CollapsingHeader("Sessions", ImGuiTreeNodeFlags_DefaultOpen)) {
+          if (state.session_error) {
+            ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.4f, 1.0f), "relay: %s",
+                               state.session_error->message.c_str());
+          }
+          draw_sessions(*state.sessions);
+        }
       }
     }
     ImGui::End();
@@ -367,6 +520,12 @@ int run_tray_app() {
 
   SharedState state;
   std::jthread worker(poll_worker, config, &state);
+  // Session inventory poll runs only when a relay is configured; with none, the
+  // landing feature stays entirely dormant (PLAN.md §2.1).
+  std::optional<std::jthread> session_worker;
+  if (!config.relay_url.empty()) {
+    session_worker.emplace(session_poll_worker, config, &state);
+  }
 
   SDL_Surface* initial_icon = render_status_icon(std::nullopt);
   SDL_Tray* tray = SDL_CreateTray(initial_icon, "Claude usage");
@@ -380,6 +539,8 @@ int run_tray_app() {
   MenuSignals signals;
   TrayUi ui(tray, &signals);
   DetailsWindow details;
+  Beeper beeper;
+  if (session_worker) beeper.init();  // Only needed when landings can occur.
 
   using namespace std::chrono_literals;
   auto last_refresh = std::chrono::steady_clock::time_point{};
@@ -451,6 +612,30 @@ int run_tray_app() {
                                message.c_str(), nullptr);
     }
 
+    // Landing notification: a session finished a substantial turn and is now
+    // idle awaiting input. Sound first (async), then a modal box — mirroring the
+    // usage-alert UX above. The worker has already deduped, so each entry here is
+    // genuinely new.
+    std::vector<Landing> landings;
+    {
+      std::lock_guard lock(state.mutex);
+      landings.swap(state.pending_landings);
+    }
+    if (!landings.empty()) {
+      beeper.beep();
+      std::string message;
+      for (const auto& landing : landings) {
+        const std::string who = !landing.title.empty()
+                                    ? landing.title
+                                    : landing.session_id.substr(0, 8);
+        message += who + " finished (" + humanize_duration(landing.duration) + ")";
+        if (!landing.cwd.empty()) message += "\n" + landing.cwd;
+        message += '\n';
+      }
+      SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION,
+                               "Claude session landed", message.c_str(), nullptr);
+    }
+
     if (details.is_open()) {
       details.render(state);  // vsync paces this branch.
     } else {
@@ -459,7 +644,9 @@ int run_tray_app() {
   }
 
   details.close();
+  beeper.shutdown();
   worker.request_stop();
+  if (session_worker) session_worker->request_stop();  // jthread also joins on destruction.
   SDL_DestroyTray(tray);
   SDL_Quit();
   return 0;

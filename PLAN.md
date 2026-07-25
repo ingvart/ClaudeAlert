@@ -344,24 +344,41 @@ short turn → none, `background_tasks` → suppressed, down-relay → exit 0 in
 `relay.py` with `RELAY_TOKEN` + `SESSION_NOTIFY_MIN_SECONDS`; confirm `GET /sessions`
 responds. The existing `/usage` behaviour is unchanged.
 
-**Step 3 — build the forwarder on Linux + wire real hooks.** See §10 prompt. Build
-`cusage_hook_notify` on the Linux dev machine; replace the Phase-0 probe hooks in
-`~/.claude/settings.json` with real `Stop` + `UserPromptSubmit` hooks (`async:true`)
-pointing at the built binary.
-- **Check:** a real >60 s turn shows a landing on `GET http://192.168.0.10:8787/sessions`;
-  a trivial turn shows none; stopping the relay leaves sessions behaving normally.
-- Also do the same hook wiring on **Windows** (point at
-  `build/debug/cusage_hook_notify.exe`) and remove the Phase-0 probe there.
+**Step 2 — deploy the relay to the Pi — ✅ DONE 2026-07-21.** The relay had been
+retired in 2026-06 (phone self-fetches usage); revived it: copied the new
+`relay/relay.py` to the Pi's `/home/ingvar/cusage/`, added
+`SESSION_NOTIFY_MIN_SECONDS=60` to the `cusage-relay.service` unit (same
+`RELAY_TOKEN`), re-enabled + started it. `GET /sessions` → empty inventory,
+`GET /usage` still 200, 401 without the token.
 
-### Phase 2 — Desktop notification (prove the alert UX where it's easy to iterate)
-Files: `src/core/session_client.*` (new), `src/gui/shared_state.h`,
-`src/gui/main_gui.cpp` / `tray_app`, config keys (§7).
-1. Poll `/sessions`, push into `SharedState`.
-2. Button on the usage page → session-list window.
-3. Sound + OS notification on a new landing; dedupe by `last_landed_at`.
-- **Check:** finishing a long session on the dev machine pops a desktop
-  notification + sound; the list shows working/idle correctly; feature is invisible
-  when `relay_url` is unset.
+**Step 3 — build the forwarder on Linux + wire real hooks — ✅ DONE 2026-07-21
+(Linux).** Built `cusage_hook_notify`; created `~/.claude/cusage.conf`
+(`relay_url` + `relay_token`); smoke test posted HTTP 200; added real `Stop` +
+`UserPromptSubmit` hooks (`async:true`) to `~/.claude/settings.json`.
+- **Check — PASSED:** a real >60 s turn produced exactly one landing on
+  `GET /sessions`; a trivial turn produced none. The live inventory also shows
+  real Claude Code sessions, confirming the hooks fire in the VS Code env on
+  Linux too.
+- **Windows (prompt §10.C) still pending** — wire the same hooks at
+  `build/debug/cusage_hook_notify.exe` and drop the Phase-0 probe.
+
+### Phase 2 — Desktop notification (prove the alert UX where it's easy to iterate) — ✅ BUILT 2026-07-21
+Files: `src/core/session.*` (new model + dedupe), `src/core/session_client.*`
+(new fetch/parse), `src/gui/shared_state.h`, `src/gui/tray_app.cpp`, config keys
+(§7), shared `relay_base()` moved to `net/relay` (deduped from the hook's copy).
+1. ✅ Second lightweight poll loop (`session_poll_worker`, `session_poll_seconds`)
+   fetches `/sessions` and pushes a `SessionInventory` into `SharedState`.
+2. ✅ Collapsing "Sessions" section on the usage page (in lieu of a second SDL
+   window — one GL context, more robust); one row per session with a
+   working/idle/ended dot, title, cwd, and "landed N ago" (relay-clock, skew-free).
+3. ✅ Sound (best-effort SDL audio chime) + modal OS notification on a new landing;
+   client-side dedupe by `(session_id, landed_at)`, first poll seeds-only so
+   pre-existing landings never notify.
+- **Check:** unit-tested (`parse_sessions`, `select_new_landings`; 27/27 pass) and
+  the `fetch_sessions` path verified live against the Pi (fresh landing surfaces;
+  legacy `/usage` URL and 401 handled). **Still to confirm interactively:** the
+  actual desktop popup + sound on a real machine with a display/tray, and the
+  invisible-when-`relay_url`-unset behaviour.
 
 ### Phase 3 — Inventory accuracy
 Files: relay (`SessionStart`/`SessionEnd` handling + aging + persistence), settings

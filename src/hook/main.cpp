@@ -29,6 +29,7 @@
 #include "core/config.h"
 #include "core/json_parse.h"
 #include "net/http_client.h"
+#include "net/relay.h"
 #include "platform/user_paths.h"
 
 namespace {
@@ -48,16 +49,6 @@ std::string get_string(const nlohmann::json& doc, const char* key) {
     return doc[key].get<std::string>();
   }
   return {};
-}
-
-// Strip a legacy ".../usage" suffix and trailing slashes so the relay base can
-// be joined with a fresh path. Tolerates relay_url given either as the base
-// (preferred) or as the older full ".../usage" publish URL.
-std::string relay_base(std::string url) {
-  constexpr std::string_view kUsage = "/usage";
-  if (url.ends_with(kUsage)) url.resize(url.size() - kUsage.size());
-  while (!url.empty() && url.back() == '/') url.pop_back();
-  return url;
 }
 
 void forward() {
@@ -103,7 +94,7 @@ void forward() {
   body["background_tasks"] = background_tasks;
   body["ts"] = ts;
 
-  const std::string url = relay_base(config.relay_url) + "/session/event";
+  const std::string url = cusage::relay_base(config.relay_url) + "/session/event";
   std::vector<std::string> headers = {"Content-Type: application/json"};
   if (!config.relay_token.empty()) {
     headers.push_back("Authorization: Bearer " + config.relay_token);

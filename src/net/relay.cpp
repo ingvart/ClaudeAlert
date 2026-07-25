@@ -1,6 +1,7 @@
 #include "net/relay.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -8,6 +9,13 @@
 #include "net/http_client.h"
 
 namespace cusage {
+
+std::string relay_base(std::string url) {
+  constexpr std::string_view kUsage = "/usage";
+  if (url.ends_with(kUsage)) url.resize(url.size() - kUsage.size());
+  while (!url.empty() && url.back() == '/') url.pop_back();
+  return url;
+}
 
 namespace {
 

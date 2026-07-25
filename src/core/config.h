@@ -17,6 +17,10 @@ struct NotifyConfig {
   int five_hour_drop_floor = 95;  // 5-hour drop alerts only when prev% >= this.
   std::string relay_url;          // Self-hosted relay URL to publish usage to.
   std::string relay_token;        // Optional shared secret for the relay.
+  // Session "landed" notifications (see PLAN.md §7). Gated on relay_url: with no
+  // relay configured the whole feature is off and these are unused.
+  int session_poll_seconds = 15;         // Widget -> relay /sessions poll cadence.
+  int session_notify_min_seconds = 60;   // Widget-side mirror; relay is authoritative.
 };
 
 // Parses key=value lines. Unknown keys are ignored; absent keys keep defaults.

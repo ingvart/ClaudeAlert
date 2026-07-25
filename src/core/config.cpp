@@ -66,10 +66,17 @@ NotifyConfig parse_config(std::string_view text) {
       config.relay_url = std::string(value);
     } else if (key == "relay_token") {
       config.relay_token = std::string(value);
+    } else if (key == "session_poll_seconds") {
+      config.session_poll_seconds =
+          parse_int(value, config.session_poll_seconds);
+    } else if (key == "session_notify_min_seconds") {
+      config.session_notify_min_seconds =
+          parse_int(value, config.session_notify_min_seconds);
     }
   }
 
   if (config.poll_seconds < 5) config.poll_seconds = 5;  // Avoid hammering.
+  if (config.session_poll_seconds < 5) config.session_poll_seconds = 5;
   return config;
 }
 
@@ -89,6 +96,11 @@ std::string serialize_config(const NotifyConfig& config) {
   out += "# Self-hosted relay so the phone can read usage (see relay/relay.py).\n";
   out += "relay_url = " + config.relay_url + "\n";
   out += "relay_token = " + config.relay_token + "\n";
+  out += "# Session 'landed' notifications (needs a relay_url; see PLAN.md).\n";
+  out += "session_poll_seconds = " +
+         std::to_string(config.session_poll_seconds) + "\n";
+  out += "session_notify_min_seconds = " +
+         std::to_string(config.session_notify_min_seconds) + "\n";
   return out;
 }
 

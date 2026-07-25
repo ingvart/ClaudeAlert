@@ -48,6 +48,8 @@ add_library(cusage_core STATIC
   src/core/alerts.cpp
   src/core/poller.cpp
   src/core/timefmt.cpp
+  src/core/session.cpp
+  src/core/session_client.cpp
   src/net/http_client.cpp
   src/net/relay.cpp
   src/platform/user_paths.cpp)
@@ -123,7 +125,8 @@ if(CUSAGE_BUILD_TESTS)
     tests/test_usage_parse.cpp
     tests/test_alerts.cpp
     tests/test_config.cpp
-    tests/test_timefmt.cpp)
+    tests/test_timefmt.cpp
+    tests/test_sessions.cpp)
   target_link_libraries(cusage_tests PRIVATE cusage_core Catch2::Catch2WithMain)
 
   include(Catch)
