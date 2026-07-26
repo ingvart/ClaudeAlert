@@ -29,6 +29,7 @@ object Prefs {
   private const val K_POLL = "poll_minutes"
   private const val K_SNAPSHOT = "last_snapshot"
   private const val K_SOUND = "sound_uri"
+  private const val K_SESSION_SOUND = "session_sound_uri"
   private const val K_RELAY_URL = "relay_url"
   private const val K_RELAY_TOKEN = "relay_token"
   private const val K_SEEN_LANDINGS = "seen_landings"
@@ -153,6 +154,14 @@ object Prefs {
 
   fun setSoundUri(context: Context, uri: Uri?) =
       prefs(context).edit().putString(K_SOUND, uri?.toString()).apply()
+
+  // A separate sound for session-landing notifications, so "usage freed" and
+  // "session done" are audibly distinct.
+  fun sessionSoundUri(context: Context): Uri? =
+      prefs(context).getString(K_SESSION_SOUND, null)?.let { Uri.parse(it) }
+
+  fun setSessionSoundUri(context: Context, uri: Uri?) =
+      prefs(context).edit().putString(K_SESSION_SOUND, uri?.toString()).apply()
 
   fun lastSnapshot(context: Context): List<NamedWindow> {
     val raw = prefs(context).getString(K_SNAPSHOT, null) ?: return emptyList()

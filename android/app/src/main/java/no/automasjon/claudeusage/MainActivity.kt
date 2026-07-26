@@ -67,14 +67,27 @@ class MainActivity : ComponentActivity() {
         }
       }
 
+  private val sessionRingtoneLauncher =
+      registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+          @Suppress("DEPRECATION")
+          val uri = result.data?.getParcelableExtra<Uri>(
+              RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+          Prefs.setSessionSoundUri(this, uri)
+          Notifications.ensureLandingChannel(this)
+        }
+      }
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     Notifications.ensureChannel(this)
+    Notifications.ensureLandingChannel(this)
     requestNotificationPermissionIfNeeded()
     schedulePeriodicPoll(this)
     setContent {
       SettingsScreen(
           onPickSound = { pickSound() },
+          onPickSessionSound = { pickSessionSound() },
           onOpenUrl = { url -> startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) })
     }
   }
@@ -82,11 +95,22 @@ class MainActivity : ComponentActivity() {
   private fun pickSound() {
     val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
       putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
-      putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Alert sound")
+      putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Usage-freed sound")
       putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
       putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, Prefs.soundUri(this@MainActivity))
     }
     ringtoneLauncher.launch(intent)
+  }
+
+  private fun pickSessionSound() {
+    val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+      putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
+      putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Session-done sound")
+      putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+      putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI,
+          Prefs.sessionSoundUri(this@MainActivity))
+    }
+    sessionRingtoneLauncher.launch(intent)
   }
 
   private fun requestNotificationPermissionIfNeeded() {
@@ -99,7 +123,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun SettingsScreen(onPickSound: () -> Unit, onOpenUrl: (String) -> Unit) {
+fun SettingsScreen(
+    onPickSound: () -> Unit,
+    onPickSessionSound: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+) {
   val context = LocalContext.current
   val config = remember { Prefs.config(context) }
   var loggedIn by remember { mutableStateOf(Prefs.isLoggedIn(context)) }
@@ -287,11 +315,24 @@ fun SettingsScreen(onPickSound: () -> Unit, onOpenUrl: (String) -> Unit) {
           label = { Text("Relay token") },
           modifier = Modifier.fillMaxWidth())
 
-      OutlinedButton(onClick = onPickSound) { Text("Pick alert sound") }
-      OutlinedButton(onClick = {
-        Notifications.post(context, 9999, "Claude usage (test)",
-            "Test alert — this is how notifications will sound.")
-      }) { Text("Send test notification") }
+      Text("Sounds", style = MaterialTheme.typography.titleMedium)
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = onPickSound, modifier = Modifier.weight(1f)) {
+          Text("Usage-freed sound")
+        }
+        OutlinedButton(onClick = {
+          Notifications.post(context, 9999, "Claude usage (test)",
+              "Usage freed — this is the usage sound.")
+        }, modifier = Modifier.weight(1f)) { Text("Test") }
+      }
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = onPickSessionSound, modifier = Modifier.weight(1f)) {
+          Text("Session-done sound")
+        }
+        OutlinedButton(onClick = {
+          Notifications.postLanding(context, 9998, "Test session", 284)
+        }, modifier = Modifier.weight(1f)) { Text("Test") }
+      }
       Button(onClick = {
         Prefs.setConfig(context, config.copy(
             notifyOnDrop = notifyOnDrop,

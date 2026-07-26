@@ -63,14 +63,14 @@ object Notifications {
   }
 
   // --- Session landings -----------------------------------------------------
-  // A separate channel from usage alerts so the user can give "session done" its
-  // own sound/importance (or silence it) independently. Uses the same chosen
-  // alert sound as usage alerts by default; the sound-hash suffix means picking a
-  // new sound yields a fresh channel that actually uses it (see channelId note).
+  // A separate channel from usage alerts, with its OWN sound (Prefs.sessionSound)
+  // so "session done" is audibly distinct from "usage freed". The sound-hash
+  // suffix means picking a new sound yields a fresh channel that actually uses it
+  // (Android binds a channel's sound permanently at creation — see channelId).
   private const val LANDING_CHANNEL_BASE = "session_landings"
 
   private fun landingChannelId(context: Context): String {
-    val sound = Prefs.soundUri(context)?.toString() ?: "default"
+    val sound = Prefs.sessionSoundUri(context)?.toString() ?: "default"
     return LANDING_CHANNEL_BASE + "_" + Integer.toHexString(sound.hashCode())
   }
 
@@ -81,7 +81,7 @@ object Notifications {
       val channel = NotificationChannel(id, "Session landed", NotificationManager.IMPORTANCE_HIGH)
       channel.description = "A Claude Code session finished working and is waiting for you"
       channel.enableVibration(true)
-      Prefs.soundUri(context)?.let { uri ->
+      Prefs.sessionSoundUri(context)?.let { uri ->
         val attributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_NOTIFICATION)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
