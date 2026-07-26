@@ -43,7 +43,6 @@ import androidx.core.content.ContextCompat
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
@@ -84,6 +83,7 @@ class MainActivity : ComponentActivity() {
     Notifications.ensureLandingChannel(this)
     requestNotificationPermissionIfNeeded()
     schedulePeriodicPoll(this)
+    SessionPollWorker.ensureScheduled(this)  // ~1-min session-landing chain
     setContent {
       SettingsScreen(
           onPickSound = { pickSound() },
@@ -339,12 +339,11 @@ fun SettingsScreen(
             weeklyThreshold = weekly.toIntOrNull() ?: config.weeklyThreshold,
             fiveHourDropFloor = fiveHourFloor.toIntOrNull() ?: config.fiveHourDropFloor))
         Prefs.setRelay(context, relayUrl, relayToken)
-        // Poll once right away so the seen-landings set is seeded now (rather than
-        // on the first periodic run up to 15 min later); the next NEW landing then
+        // Start the ~1-min session chain immediately (delay 0): seeds the
+        // seen-landings set now and begins fast polling, so the next NEW landing
         // notifies reliably.
         if (relayUrl.isNotBlank()) {
-          WorkManager.getInstance(context)
-              .enqueue(OneTimeWorkRequestBuilder<PollWorker>().build())
+          SessionPollWorker.schedule(context, 0)
         }
         statusOk = true
         status = "Settings saved."
