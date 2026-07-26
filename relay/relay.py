@@ -20,7 +20,8 @@ Usage:
 
 Environment:
     RELAY_TOKEN                 shared bearer secret (auth off if unset)
-    SESSION_NOTIFY_MIN_SECONDS  min turn duration to count as a landing (default 60)
+    SESSION_NOTIFY_MIN_SECONDS  min turn duration to count as a landing (default 0
+                                = notify on every stop, any length)
     SESSION_STALE_HOURS         drop sessions/landings older than this (default 12)
 
 Endpoints (all require `Authorization: Bearer <RELAY_TOKEN>` when a token is set):
@@ -43,7 +44,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(_HERE, "relay_state.json")
 SESSION_STATE_FILE = os.path.join(_HERE, "session_state.json")
 
-NOTIFY_MIN_SECONDS = int(os.environ.get("SESSION_NOTIFY_MIN_SECONDS", "60"))
+# Default 0 => notify on EVERY session stop, of any length. Set the env to a
+# positive value only if you later want to filter out short turns.
+NOTIFY_MIN_SECONDS = int(os.environ.get("SESSION_NOTIFY_MIN_SECONDS", "0"))
 STALE_SECONDS = float(os.environ.get("SESSION_STALE_HOURS", "12")) * 3600.0
 
 _lock = threading.Lock()
@@ -130,7 +133,9 @@ def _handle_event(evt: dict) -> None:
         s["last_landed_at"] = ts
         s["last_duration"] = duration
         background = int(evt.get("background_tasks", 0) or 0)
-        # Only a substantial turn with no lingering background work is a landing.
+        # A stop is a landing unless background work is still running (the session
+        # isn't truly idle then). NOTIFY_MIN_SECONDS defaults to 0, so every stop
+        # counts; raise it only to filter out short turns.
         if duration >= NOTIFY_MIN_SECONDS and background == 0:
             _landings.append({
                 "session_id": sid,

@@ -52,16 +52,19 @@ deterministically regardless of how the model is behaving or how long the sessio
 has run. This is the reliability property we need. "Ask Claude to run a script when
 done" decays over long sessions and is rejected as the primary mechanism.
 
-### 2.3 Duration threshold instead of a per-session checkbox (v1)
-`Stop` fires on **every** turn, so "notify for all sessions" would ping on trivial
-turns ("yes", "continue"). Instead, the relay pairs `UserPromptSubmit` (turn start)
-with `Stop` (turn end) **by shared `prompt_id`** (verified in Phase 0), computes the
-turn duration, and **only notifies when the turn ran longer than
-`session_notify_min_seconds` (default 60)**. That surfaces exactly "it finished the
-substantial thing and is now waiting", with zero per-session UI. Additionally,
-**suppress the notification when the `Stop` payload's `background_tasks` is
-non-empty** — the session isn't truly idle. The checkbox can be layered on later if
-ever wanted.
+### 2.3 Notify on every stop (updated 2026-07-26)
+`Stop` fires on **every** turn. The relay pairs `UserPromptSubmit` (turn start) with
+`Stop` (turn end) **by shared `prompt_id`** (verified in Phase 0) and computes the
+turn duration, but **`SESSION_NOTIFY_MIN_SECONDS` now defaults to 0 → every stop
+notifies, regardless of length** (the user's explicit choice: "notifications for all
+sessions which come to a stop, not only the ones which have worked 60 seconds"). The
+duration is still computed and the threshold knob still exists — raise it above 0
+only if the all-stops firehose ever gets noisy. Still **suppress when the `Stop`
+payload's `background_tasks` is non-empty** — the session isn't truly idle then.
+
+> Originally this was a 60 s duration filter (to avoid pinging on trivial "yes"/
+> "continue" turns) used in place of a per-session checkbox. The user preferred
+> all-stops; the stall/"went quiet" watchdog (Phase 5) was explicitly declined.
 
 ### 2.4 Fire-and-forget forwarder — a down Pi must never affect my sessions
 A `Stop` hook runs *before* the session continues. So the forwarder:
