@@ -145,6 +145,23 @@ def _handle_event(evt: dict) -> None:
                 "duration": duration,
             })
             del _landings[:-50]  # Keep only the most recent 50.
+    elif event == "Notification":
+        # Claude paused to ask for input/permission (or went idle) mid-turn — not
+        # a turn end, so no duration pairing, but it needs attention now, so
+        # notify like a stop. (Claude Code's Notification hook is unreliable in the
+        # VS Code extension; this fires wherever the hook does, e.g. the CLI.)
+        s["state"] = "idle"
+        s["last_landed_at"] = ts
+        s["last_duration"] = 0
+        if int(evt.get("background_tasks", 0) or 0) == 0:
+            _landings.append({
+                "session_id": sid,
+                "title": s.get("title", ""),
+                "cwd": s.get("cwd", ""),
+                "landed_at": ts,
+                "duration": 0,
+            })
+            del _landings[:-50]
     elif event == "SessionEnd":
         s["state"] = "ended"
         s["ended_at"] = ts
