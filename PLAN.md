@@ -425,9 +425,14 @@ relay is set). Also carried the in-progress usage panel (`UsagePanel/UsageFormat
   WorkManager cadence; the in-app list refreshes every 15 s). First poll after
   configuring **seeds silently** — the first landing that notifies is the next one
   after setup.
-- **Note:** WorkManager's ~15 min floor bounds background latency (accepted for v1;
-  FCM in Phase 5 if it matters). In-app foreground updates the list but does not
-  post notifications (redundant while looking at it).
+- **Session poll cadence (updated 2026-07-26):** sessions poll on their own ~1-min
+  self-rescheduling one-time worker (`SessionPollWorker`), decoupled from the 15-min
+  usage `PeriodicWorker` (WorkManager periodic floors at 15 min; one-time work has no
+  floor). The usage worker re-arms the chain as a reboot-surviving keepalive.
+  **Caveat:** Android Doze batches background work when the phone is idle/asleep, so
+  the true cadence stretches then; guaranteed 1-min-while-asleep needs a foreground
+  service or FCM (Phase 5). In-app foreground also refreshes the list every 15 s but
+  doesn't post notifications (the workers do).
 
 ### Phase 5 (deferred / optional) — nice-to-haves
 - Per-session enable/disable checkbox (needs the inventory from Phase 3; the toggle
