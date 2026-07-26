@@ -34,6 +34,7 @@ object Prefs {
   private const val K_RELAY_TOKEN = "relay_token"
   private const val K_SEEN_LANDINGS = "seen_landings"
   private const val K_LANDINGS_SEEDED = "landings_seeded"
+  private const val K_SESSION_REV = "session_rev"
   private const val MAX_SEEN_LANDINGS = 200
   private val json = Json { ignoreUnknownKeys = true }
 
@@ -123,9 +124,18 @@ object Prefs {
     // on the next poll, so a switch never dumps a backlog of old notifications.
     if (relayBase(url) != relayBase(relayUrl(context))) {
       editor.remove(K_SEEN_LANDINGS).putBoolean(K_LANDINGS_SEEDED, false)
+          .remove(K_SESSION_REV)
     }
     editor.apply()
   }
+
+  // Last relay revision the fast poller saw; sent back as ?since= to get a cheap
+  // 204 when nothing changed. -1 forces a full fetch (first poll / after reset).
+  fun lastSessionRev(context: Context): Long =
+      prefs(context).getLong(K_SESSION_REV, -1L)
+
+  fun setLastSessionRev(context: Context, rev: Long) =
+      prefs(context).edit().putLong(K_SESSION_REV, rev).apply()
 
   fun landingsSeeded(context: Context): Boolean =
       prefs(context).getBoolean(K_LANDINGS_SEEDED, false)

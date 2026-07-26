@@ -19,15 +19,19 @@ object SessionApi {
   private val client = OkHttpClient.Builder().callTimeout(8, TimeUnit.SECONDS).build()
   private val json = Json { ignoreUnknownKeys = true }
 
-  // Throws SessionHttpException on non-2xx, IOException on transport failure.
-  fun fetch(relayUrl: String, relayToken: String): SessionInventory {
-    val url = relayBase(relayUrl) + "/sessions"
+  // Throws SessionHttpException on non-2xx (except 204), IOException on transport
+  // failure. With `since` set, a conditional poll: the relay replies 204 (and this
+  // returns null) when nothing has changed since that revision, saving data.
+  fun fetch(relayUrl: String, relayToken: String, since: Long? = null): SessionInventory? {
+    var url = relayBase(relayUrl) + "/sessions"
+    if (since != null) url += "?since=$since"
     val builder = Request.Builder()
         .url(url)
         .header("Content-Type", "application/json")
         .get()
     if (relayToken.isNotBlank()) builder.header("Authorization", "Bearer $relayToken")
     client.newCall(builder.build()).execute().use { response ->
+      if (response.code == 204) return null  // Unchanged since `since`.
       val body = response.body?.string().orEmpty()
       if (!response.isSuccessful) throw SessionHttpException(response.code)
       return json.decodeFromString(SessionsDto.serializer(), body).toInventory()

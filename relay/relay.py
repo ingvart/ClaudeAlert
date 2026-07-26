@@ -28,7 +28,8 @@ Endpoints (all require `Authorization: Bearer <RELAY_TOKEN>` when a token is set
     POST /usage          body = usage JSON        (desktop publishes here)
     GET  /usage       -> latest usage JSON, or 204 if none yet (phone reads here)
     POST /session/event  body = hook event JSON   (cusage_hook_notify posts here)
-    GET  /sessions    -> { sessions:[...], landings:[...], now:<epoch> }
+    GET  /sessions    -> { sessions:[...], landings:[...], now:<epoch>, rev:<int> }
+                         with ?since=<rev>: 204 (empty) if unchanged, else full JSON
 """
 
 import http.server
@@ -37,6 +38,7 @@ import os
 import sys
 import threading
 import time
+import urllib.parse
 
 TOKEN = os.environ.get("RELAY_TOKEN", "")
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
@@ -71,19 +73,24 @@ def _load_sessions():
     try:
         with open(SESSION_STATE_FILE, "r", encoding="utf-8") as handle:
             data = json.load(handle)
-        return data.get("sessions", {}), data.get("landings", [])
+        return (data.get("sessions", {}), data.get("landings", []),
+                int(data.get("rev", 0)))
     except (OSError, ValueError):
-        return {}, []
+        return {}, [], 0
 
 
-_sessions, _landings = _load_sessions()
+_sessions, _landings, _rev = _load_sessions()
 _turns = {}  # prompt_id -> turn-start ts; transient, rebuilt as events arrive
+# `_rev` bumps only when a new landing appears. Clients poll GET /sessions?since=
+# <rev>; if it equals the current rev, the relay replies 204 (empty) so an idle
+# 1-min poll costs ~nothing. It only sends the full JSON when a landing happened.
 
 
 def _persist_sessions() -> None:
     try:
         with open(SESSION_STATE_FILE, "w", encoding="utf-8") as handle:
-            json.dump({"sessions": _sessions, "landings": _landings}, handle)
+            json.dump({"sessions": _sessions, "landings": _landings,
+                       "rev": _rev}, handle)
     except OSError:
         pass  # In-memory copy still serves the widget.
 
@@ -102,6 +109,7 @@ def _sweep(now: float) -> None:
 
 
 def _handle_event(evt: dict) -> None:
+    global _rev
     sid = evt.get("session_id")
     if not sid:
         return
@@ -145,6 +153,7 @@ def _handle_event(evt: dict) -> None:
                 "duration": duration,
             })
             del _landings[:-50]  # Keep only the most recent 50.
+            _rev += 1            # New landing -> clients should fetch.
     elif event == "Notification":
         # Claude paused to ask for input/permission (or went idle) mid-turn — not
         # a turn end, so no duration pairing, but it needs attention now, so
@@ -162,6 +171,7 @@ def _handle_event(evt: dict) -> None:
                 "duration": 0,
             })
             del _landings[:-50]
+            _rev += 1            # New attention event -> clients should fetch.
     elif event == "SessionEnd":
         s["state"] = "ended"
         s["ended_at"] = ts
@@ -184,7 +194,8 @@ def _sessions_snapshot() -> dict:
             "last_landed_at": s.get("last_landed_at"),
             "last_duration": s.get("last_duration"),
         })
-    return {"sessions": sessions, "landings": list(_landings), "now": now}
+    return {"sessions": sessions, "landings": list(_landings), "now": now,
+            "rev": _rev}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -216,7 +227,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(204)
             return self._send(200, data.encode("utf-8"))
         if path == "/sessions":
+            # Conditional poll: ?since=<rev>. If the caller already has the current
+            # revision, reply 204 (empty) so an idle 1-min poll costs almost no
+            # data; otherwise send the full snapshot (which carries the new rev).
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            since_raw = query.get("since", [None])[0]
             with _lock:
+                if since_raw is not None:
+                    try:
+                        if int(since_raw) == _rev:
+                            return self._send(204)
+                    except ValueError:
+                        pass  # Bad `since` -> just send the full snapshot.
                 snapshot = _sessions_snapshot()
             return self._send(200, json.dumps(snapshot).encode("utf-8"))
         return self._send(404)

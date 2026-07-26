@@ -32,6 +32,7 @@ data class SessionsDto(
     val sessions: List<SessionEntryDto> = emptyList(),
     val landings: List<LandingDto> = emptyList(),
     val now: Double = 0.0,
+    val rev: Long = 0,  // Bumps only on a new landing; used for conditional polls.
 )
 
 // Domain views (whole-second timestamps on the relay clock).
@@ -59,6 +60,7 @@ data class SessionInventory(
     val sessions: List<SessionEntry>,
     val landings: List<Landing>,
     val now: Long,  // Relay clock at snapshot time (skew-free "landed N ago").
+    val rev: Long,  // Revision to send back as ?since= on the next poll.
 )
 
 fun SessionsDto.toInventory(): SessionInventory = SessionInventory(
@@ -83,6 +85,7 @@ fun SessionsDto.toInventory(): SessionInventory = SessionInventory(
       )
     },
     now = now.toLong(),
+    rev = rev,
 )
 
 // Stable identity of a landing for dedupe (PLAN.md §6.B): the same

@@ -20,13 +20,18 @@ fun pollSessionsOnce(context: Context) {
   val relayUrl = Prefs.relayUrl(context)
   if (relayUrl.isBlank()) return  // Feature off.
 
-  val inventory = SessionApi.fetch(relayUrl, Prefs.relayToken(context))
+  // Conditional poll: send our last revision; the relay replies 204 -> null when
+  // nothing has landed since, so the common idle case transfers almost no data.
+  val inventory = SessionApi.fetch(
+      relayUrl, Prefs.relayToken(context), Prefs.lastSessionRev(context)) ?: return
+
   val seen = Prefs.seenLandings(context)
 
   if (!Prefs.landingsSeeded(context)) {
     inventory.landings.forEach { seen.add(landingKey(it)) }
     Prefs.setSeenLandings(context, seen)
     Prefs.setLandingsSeeded(context, true)
+    Prefs.setLastSessionRev(context, inventory.rev)
     return
   }
 
@@ -38,6 +43,7 @@ fun pollSessionsOnce(context: Context) {
         sessionLabel(landing.title, landing.cwd), landing.duration)
   }
   Prefs.setSeenLandings(context, seen)
+  Prefs.setLastSessionRev(context, inventory.rev)
 }
 
 // Session landings need a much faster cadence than usage (which stays on the

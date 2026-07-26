@@ -429,6 +429,12 @@ relay is set). Also carried the in-progress usage panel (`UsagePanel/UsageFormat
   self-rescheduling one-time worker (`SessionPollWorker`), decoupled from the 15-min
   usage `PeriodicWorker` (WorkManager periodic floors at 15 min; one-time work has no
   floor). The usage worker re-arms the chain as a reboot-surviving keepalive.
+- **Data-saving conditional poll (2026-07-26):** the relay keeps a `rev` counter that
+  bumps only on a new landing. The phone polls `GET /sessions?since=<rev>`; if `rev`
+  is unchanged the relay returns **204 (empty)**, else the full JSON with the new
+  `rev`. So an idle 1-min poll transfers ~200 B, not ~1 KB of JSON — full data only
+  on the minute something actually lands. Client stores the rev in `Prefs`
+  (reset on relay change so it re-seeds).
   **Caveat:** Android Doze batches background work when the phone is idle/asleep, so
   the true cadence stretches then; guaranteed 1-min-while-asleep needs a foreground
   service or FCM (Phase 5). In-app foreground also refreshes the list every 15 s but
