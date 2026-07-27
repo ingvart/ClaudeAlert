@@ -154,11 +154,15 @@ def _handle_event(evt: dict) -> None:
             })
             del _landings[:-50]  # Keep only the most recent 50.
             _rev += 1            # New landing -> clients should fetch.
-    elif event == "Notification":
-        # Claude paused to ask for input/permission (or went idle) mid-turn — not
-        # a turn end, so no duration pairing, but it needs attention now, so
-        # notify like a stop. (Claude Code's Notification hook is unreliable in the
-        # VS Code extension; this fires wherever the hook does, e.g. the CLI.)
+    elif event in ("Notification", "PreToolUse"):
+        # Session paused mid-turn and needs attention now — notify like a stop.
+        #   * Notification: input/permission prompt or idle (unreliable in the VS
+        #     Code extension; fires in the CLI).
+        #   * PreToolUse: a multiple-choice question — the forwarder's PreToolUse
+        #     hook is matched to the AskUserQuestion tool in settings.json, so any
+        #     PreToolUse that reaches here is a question pause. This DOES fire in
+        #     the VS Code extension.
+        # Not a turn end, so no duration pairing.
         s["state"] = "idle"
         s["last_landed_at"] = ts
         s["last_duration"] = 0

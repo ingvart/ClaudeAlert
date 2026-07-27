@@ -136,9 +136,15 @@ latency ever bugs me.
 | Hook | Fires when | Used for |
 |------|-----------|----------|
 | `UserPromptSubmit` | a turn starts | mark **working**; start duration clock |
-| `Stop` | a turn lands (spinner stops) | mark **idle**; compute duration; maybe notify |
+| `Stop` | a turn lands (spinner stops) | mark **idle**; compute duration; notify |
+| `PreToolUse` (matcher `AskUserQuestion`) | a multiple-choice question is asked | notify (attention) — **fires in VS Code**, unlike `Notification` |
+| `Notification` (matcher `*`) | permission/idle prompt mid-turn | notify (attention) — unreliable in the VS Code extension |
 | `SessionStart` | session spawns | add to inventory *(inventory phase)* |
 | `SessionEnd` | session terminates | remove from inventory *(inventory phase)* |
+
+The relay treats `Stop`, `Notification`, and the `AskUserQuestion` `PreToolUse` all
+as landings (same phone notification). `PreToolUse` is matched to exactly the
+`AskUserQuestion` tool, so it never fires on ordinary tool calls.
 
 MVP uses only `UserPromptSubmit` + `Stop`. `SessionStart`/`SessionEnd` are added in
 the inventory phase for an accurate session list.
